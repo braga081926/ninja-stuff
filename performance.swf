@@ -42,10 +42,13 @@ package ChargeurTransformice_fla
       
       private var gameLoaded:Boolean = false;
       
-      // ===== ADIÇÕES PARA ÁUDIO =====
-      private var soundSystem:Object;
-      private var isSoundEnabled:Boolean = true;
-      // ==============================
+      private var lastJumpTime:Number = 0;
+      private var jumpCooldown:Number = 120;
+      private var pulseInterval:Number = 33;
+      private var resetActive:Boolean = false;
+      private var lastFrameTime:Number = 0;
+      private var targetFPS:Number = 30;
+      private var frameTime:Number = 1000 / 30;
       
       public function MainTimeline()
       {
@@ -60,11 +63,6 @@ package ChargeurTransformice_fla
          this.Charge = 0;
          removeChild(this._C);
          this.gameLoaded = true;
-         
-         // ===== INICIALIZAR ÁUDIO APÓS CARREGAMENTO =====
-         this.initAudioSystem();
-         // ===============================================
-         
          this.initMacroSystem();
       }
       
@@ -96,91 +94,13 @@ package ChargeurTransformice_fla
          this.Chargeur.load(new URLRequest("http://www.transformice.com/Transformice.swf?n=" + this.date.time));
       }
       
-      // ===== FUNÇÕES DE ÁUDIO ADICIONADAS =====
-      private function initAudioSystem() : void
-      {
-         trace("🔊 Inicializando sistema de áudio...");
-         
-         // Configurar segurança para carregar áudio da web
-         Security.allowDomain("*");
-         Security.allowInsecureDomain("*");
-         
-         this.soundSystem = {
-            "sounds": {},
-            "enabled": true,
-            "volume": 0.7
-         };
-         
-         // Configurar volume global
-         SoundMixer.soundTransform = new SoundTransform(this.soundSystem.volume);
-         
-         trace("🔊 Sistema de áudio pronto!");
-      }
-      
-      private function loadGameSound(soundName:String, soundUrl:String) : void
-      {
-         try {
-            var urlReq:URLRequest = new URLRequest(soundUrl);
-            var snd:Sound = new Sound();
-            
-            snd.addEventListener(Event.COMPLETE, 
-               function(e:Event):void {
-                  trace("🔊 ✅ Som '" + soundName + "' carregado!");
-                  soundSystem.sounds[soundName] = snd;
-               }
-            );
-            
-            snd.addEventListener(IOErrorEvent.IO_ERROR, 
-               function(e:IOErrorEvent):void {
-                  trace("🔊 ❌ Erro ao carregar '" + soundName + "'");
-               }
-            );
-            
-            snd.load(urlReq);
-         } catch(e:Error) {
-            trace("🔊 ❌ Erro crítico no áudio: " + e.message);
-         }
-      }
-      
-      private function playGameSound(soundName:String, vol:Number = 1.0) : void
-      {
-         if(!this.soundSystem.enabled) return;
-         
-         try {
-            if(this.soundSystem.sounds[soundName]) {
-               var soundTransform:SoundTransform = new SoundTransform(vol * this.soundSystem.volume);
-               var channel:SoundChannel = this.soundSystem.sounds[soundName].play();
-               
-               if(channel) {
-                  channel.soundTransform = soundTransform;
-                  
-                  channel.addEventListener(Event.SOUND_COMPLETE, 
-                     function(e:Event):void {
-                        channel = null;
-                     }
-                  );
-               }
-            }
-         } catch(e:Error) {
-            // Ignorar erros silenciosamente
-         }
-      }
-      
-      private function toggleAudio() : void
-      {
-         this.soundSystem.enabled = !this.soundSystem.enabled;
-         SoundMixer.soundTransform = new SoundTransform(this.soundSystem.enabled ? this.soundSystem.volume : 0);
-         trace("🔊 Áudio " + (this.soundSystem.enabled ? "LIGADO" : "DESLIGADO"));
-      }
-      // ========================================
-      
       private function initMacroSystem() : void
       {
          var self:MainTimeline = this;
          setTimeout(function():void
          {
             self.setupMacro();
-         },2000);
+         },1500);
       }
       
       private function setupMacro() : void
@@ -188,13 +108,18 @@ package ChargeurTransformice_fla
          var gameContent:*;
          var self:MainTimeline;
          trace("Inicializando sistema de macro...");
+         
          this.macroSystem = {
             "active":true,
             "keyStates":{},
-            "eResetFlag":false,
             "pulseTimer":null,
-            "stageRef":null
+            "stageRef":null,
+            "lastProcessTime":0,
+            "frameCounter":0,
+            "pendingKeys":[],
+            "jumpPriority":true
          };
+         
          gameContent = this.Chargeur.content;
          if(gameContent && gameContent.hasOwnProperty("stage"))
          {
@@ -202,19 +127,15 @@ package ChargeurTransformice_fla
             this.setupKeyListeners(this.macroSystem.stageRef);
             this.startPulseSystem();
             trace("Macro inicializado com sucesso!");
-            
-            // ===== TOCAR SOM DE INICIALIZAÇÃO =====
-            this.playGameSound("startup");
-            // ======================================
          }
          else
          {
-            trace("Erro: Não foi possível acessar o stage do jogo");
+            trace("Aguardando stage do jogo...");
             self = this;
             setTimeout(function():void
             {
                self.setupMacro();
-            },1000);
+            },500);
          }
       }
       
@@ -225,11 +146,10 @@ package ChargeurTransformice_fla
             stage.removeEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown);
             stage.removeEventListener(KeyboardEvent.KEY_UP,this.onKeyUp);
          }
-         catch(e:Error)
-         {
-         }
-         stage.addEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown,false,0);
-         stage.addEventListener(KeyboardEvent.KEY_UP,this.onKeyUp,false,0);
+         catch(e:Error) {}
+         
+         stage.addEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown,false,100,true);
+         stage.addEventListener(KeyboardEvent.KEY_UP,this.onKeyUp,false,100,true);
       }
       
       private function onKeyDown(e:KeyboardEvent) : void
@@ -238,37 +158,71 @@ package ChargeurTransformice_fla
          {
             return;
          }
+         
          var keyCode:uint = e.keyCode;
-         if(keyCode == 69)
+         var currentTime:Number = getTimer();
+         
+         // Tecla 1 (keyCode 49) para reset - ALTERADO AQUI
+         if(keyCode == 49) // TECLA 1
          {
-            this.macroSystem.eResetFlag = true;
-            this.performSoftReset();
-            
-            // ===== TOCAR SOM DE RESET =====
-            this.playGameSound("reset");
-            // ==============================
-            
+            if(!this.resetActive)
+            {
+               this.resetActive = true;
+               this.performSoftReset();
+               trace("Reset ativado (TECLA 1)");
+            }
             e.stopImmediatePropagation();
+            e.preventDefault();
             return;
          }
+         
+         // Verificar se é tecla de pulo
+         var isJumpKey:Boolean = (keyCode == 38 || keyCode == 87);
+         
+         if(isJumpKey)
+         {
+            // Cooldown para pulo
+            if(currentTime - this.lastJumpTime < this.jumpCooldown)
+            {
+               return;
+            }
+            this.lastJumpTime = currentTime;
+         }
+         
+         // Verificar se é tecla de movimento
          if(this.isMovementKey(keyCode))
          {
-            this.macroSystem.keyStates[keyCode] = {
-               "pressed":true,
-               "pressTime":getTimer(),
-               "processed":false
-            };
-            this.sendKeyToGame(keyCode,true);
-            
-            // ===== TOCAR SOM DE MOVIMENTO =====
-            if(keyCode == 38 || keyCode == 87) {
-               this.playGameSound("jump");
-            } else if(keyCode == 37 || keyCode == 39 || keyCode == 65 || keyCode == 68) {
-               this.playGameSound("move", 0.5);
+            // Se for tecla de pulo, ela tem prioridade
+            if(isJumpKey)
+            {
+               // Limpar outras teclas se necessário
+               this.ensureJumpPriority();
             }
-            // ==================================
+            
+            if(!this.macroSystem.keyStates[keyCode])
+            {
+               this.macroSystem.keyStates[keyCode] = {
+                  "pressed":true,
+                  "pressTime":currentTime,
+                  "lastSent":0,
+                  "holdCount":0,
+                  "isJumpKey":isJumpKey
+               };
+            }
+            else
+            {
+               this.macroSystem.keyStates[keyCode].pressed = true;
+               this.macroSystem.keyStates[keyCode].pressTime = currentTime;
+            }
+            
+            // Enviar imediatamente se for pulo
+            if(isJumpKey)
+            {
+               this.sendKeyToGame(keyCode,true);
+            }
             
             e.stopImmediatePropagation();
+            e.preventDefault();
          }
       }
       
@@ -278,62 +232,166 @@ package ChargeurTransformice_fla
          {
             return;
          }
+         
          var keyCode:uint = e.keyCode;
-         if(keyCode == 69)
+         
+         // TECLA 1 para reset - ALTERADO AQUI
+         if(keyCode == 49) // TECLA 1
          {
-            this.macroSystem.eResetFlag = false;
+            this.resetActive = false;
             return;
          }
+         
          if(this.isMovementKey(keyCode))
          {
             if(this.macroSystem.keyStates[keyCode])
             {
                this.macroSystem.keyStates[keyCode].pressed = false;
-               this.sendKeyToGame(keyCode,false);
+               this.macroSystem.keyStates[keyCode].holdCount = 0;
+               
+               // Se for tecla de pulo, enviar KEY_UP imediatamente
+               if(keyCode == 38 || keyCode == 87)
+               {
+                  this.sendKeyToGame(keyCode,false);
+               }
             }
             e.stopImmediatePropagation();
+            e.preventDefault();
          }
       }
       
       private function startPulseSystem() : void
       {
-         this.macroSystem.pulseTimer = new Timer(0);
-         this.macroSystem.pulseTimer.addEventListener(TimerEvent.TIMER,this.processMacroPulse);
+         this.macroSystem.pulseTimer = new Timer(this.pulseInterval);
+         this.macroSystem.pulseTimer.addEventListener(TimerEvent.TIMER,this.processKeyStates);
          this.macroSystem.pulseTimer.start();
       }
       
-      private function processMacroPulse(e:TimerEvent) : void
+      private function processKeyStates(e:TimerEvent = null) : void
       {
          if(!this.macroSystem || !this.macroSystem.active)
          {
             return;
          }
-         var currentTime:Number = Number(getTimer());
+         
+         var currentTime:Number = getTimer();
          var stage:Stage = this.macroSystem.stageRef;
+         
          if(!stage)
          {
             return;
          }
-         if(this.macroSystem.eResetFlag)
+         
+         // Controlar FPS - processar apenas se passou tempo suficiente
+         if(currentTime - this.lastFrameTime < this.frameTime)
          {
-            this.performFullReset();
-            this.macroSystem.eResetFlag = false;
             return;
          }
-         for(var keyCode in this.macroSystem.keyStates)
+         this.lastFrameTime = currentTime;
+         
+         // Verificar reset - ALTERADO PARA TECLA 1
+         if(this.resetActive)
+         {
+            this.performFullReset();
+            this.resetActive = false;
+            return;
+         }
+         
+         // Processar teclas com prioridade para pulo
+         this.processKeysWithPriority(currentTime);
+      }
+      
+      private function processKeysWithPriority(currentTime:Number) : void
+      {
+         var jumpKeyPressed:Boolean = false;
+         var jumpKeyCode:uint = 0;
+         
+         // Primeira passada: verificar se há tecla de pulo pressionada
+         for(var keyCode:String in this.macroSystem.keyStates)
          {
             var keyState:Object = this.macroSystem.keyStates[keyCode];
             var keyNum:uint = uint(keyCode);
+            
+            if(keyState.pressed && (keyNum == 38 || keyNum == 87))
+            {
+               jumpKeyPressed = true;
+               jumpKeyCode = keyNum;
+               break;
+            }
+         }
+         
+         // Se há tecla de pulo pressionada, processá-la primeiro
+         if(jumpKeyPressed)
+         {
+            var jumpState:Object = this.macroSystem.keyStates[jumpKeyCode];
+            
+            if(jumpState.holdCount == 0 || currentTime - jumpState.lastSent > 100)
+            {
+               this.sendKeyToGame(jumpKeyCode,true);
+               jumpState.lastSent = currentTime;
+               jumpState.holdCount++;
+               
+               // Liberar outras teclas de movimento se necessário
+               this.releaseOtherMovementKeys(jumpKeyCode);
+            }
+         }
+         
+         // Segunda passada: processar outras teclas (se não há pulo ou após processar o pulo)
+         for(keyCode in this.macroSystem.keyStates)
+         {
+            keyState = this.macroSystem.keyStates[keyCode];
+            keyNum = uint(keyCode);
+            
+            // Pular se for tecla de pulo (já processada)
+            if(keyNum == 38 || keyNum == 87)
+            {
+               continue;
+            }
+            
             if(keyState.pressed)
             {
-               this.sendKeyToGame(keyNum,true);
-               if(keyNum == 38 || keyNum == 87)
+               keyState.holdCount++;
+               
+               // Enviar a cada 50ms para teclas normais
+               if(currentTime - keyState.lastSent > 50 || keyState.holdCount == 1)
                {
-                  if(currentTime % 4 == 0)
-                  {
-                     this.sendKeyToGame(keyNum,true);
-                  }
+                  this.sendKeyToGame(keyNum,true);
+                  keyState.lastSent = currentTime;
                }
+            }
+         }
+      }
+      
+      private function ensureJumpPriority() : void
+      {
+         // Garantir que tecla de pulo tenha prioridade
+         var currentTime:Number = getTimer();
+         
+         // Enviar KEY_DOWN para pulo imediatamente
+         if(this.macroSystem.keyStates[38] && this.macroSystem.keyStates[38].pressed)
+         {
+            this.sendKeyToGame(38,true);
+            this.macroSystem.keyStates[38].lastSent = currentTime;
+         }
+         else if(this.macroSystem.keyStates[87] && this.macroSystem.keyStates[87].pressed)
+         {
+            this.sendKeyToGame(87,true);
+            this.macroSystem.keyStates[87].lastSent = currentTime;
+         }
+      }
+      
+      private function releaseOtherMovementKeys(jumpKeyCode:uint) : void
+      {
+         // Liberar outras teclas de movimento quando pulo é pressionado
+         var otherKeys:Array = [37, 39, 40, 65, 68, 83];
+         
+         for each(var keyCode:uint in otherKeys)
+         {
+            if(this.macroSystem.keyStates[keyCode] && this.macroSystem.keyStates[keyCode].pressed)
+            {
+               this.sendKeyToGame(keyCode,false);
+               this.macroSystem.keyStates[keyCode].pressed = false;
+               this.macroSystem.keyStates[keyCode].holdCount = 0;
             }
          }
       }
@@ -342,6 +400,7 @@ package ChargeurTransformice_fla
       {
          var stage:Stage;
          var event:KeyboardEvent;
+         
          try
          {
             stage = this.macroSystem.stageRef;
@@ -349,75 +408,106 @@ package ChargeurTransformice_fla
             {
                return;
             }
-            event = new KeyboardEvent(isDown ? KeyboardEvent.KEY_DOWN : KeyboardEvent.KEY_UP,true,true,0,keyCode,0,false,false,false);
+            
+            event = new KeyboardEvent(
+               isDown ? KeyboardEvent.KEY_DOWN : KeyboardEvent.KEY_UP,
+               true,
+               true,
+               0,
+               keyCode,
+               0,
+               false,
+               false,
+               false
+            );
+            
             stage.dispatchEvent(event);
          }
          catch(e:Error)
          {
-            trace("Erro ao enviar tecla: " + e.message);
          }
       }
       
       private function performSoftReset() : void
       {
-         trace("Reset suave ativado");
-         for(var keyCode in this.macroSystem.keyStates)
+         var currentTime:Number = getTimer();
+         
+         for(var keyCode:String in this.macroSystem.keyStates)
          {
-            if(this.macroSystem.keyStates[keyCode].pressed)
+            var keyState:Object = this.macroSystem.keyStates[keyCode];
+            if(keyState.pressed)
             {
                this.sendKeyToGame(uint(keyCode),false);
-               this.macroSystem.keyStates[keyCode].pressed = false;
+               keyState.pressed = false;
+               keyState.holdCount = 0;
             }
          }
+         
+         this.lastJumpTime = currentTime - this.jumpCooldown;
       }
       
       private function performFullReset() : void
       {
-         var self:MainTimeline;
-         trace("Reset completo ativado");
          if(this.macroSystem.pulseTimer)
          {
             this.macroSystem.pulseTimer.stop();
          }
+         
          this.releaseAllKeys();
+         
          this.macroSystem.keyStates = {};
-         this.macroSystem.eResetFlag = false;
-         self = this;
+         this.lastJumpTime = 0;
+         this.resetActive = false;
+         this.lastFrameTime = 0;
+         
+         var self:MainTimeline = this;
          setTimeout(function():void
          {
-            self.macroSystem.active = true;
-            self.macroSystem.pulseTimer.start();
-            trace("Macro reiniciado");
-         },100);
+            if(self.macroSystem)
+            {
+               self.macroSystem.active = true;
+               if(self.macroSystem.pulseTimer)
+               {
+                  self.macroSystem.pulseTimer.start();
+               }
+            }
+         },50);
       }
       
       private function releaseAllKeys() : void
       {
-         var keys:Array;
-         var keyCode:uint;
-         var event:KeyboardEvent;
+         var keys:Array = [37,38,39,40,65,68,83,87];
          var stage:Stage = this.macroSystem.stageRef;
+         
          if(!stage)
          {
             return;
          }
-         keys = [37,38,39,40,65,68,83,87];
-         for each(keyCode in keys)
+         
+         for each(var keyCode:uint in keys)
          {
             try
             {
-               event = new KeyboardEvent(KeyboardEvent.KEY_UP,true,false,0,keyCode,0);
+               var event:KeyboardEvent = new KeyboardEvent(
+                  KeyboardEvent.KEY_UP,
+                  true,
+                  false,
+                  0,
+                  keyCode,
+                  0
+               );
                stage.dispatchEvent(event);
             }
-            catch(e:Error)
-            {
-            }
+            catch(e:Error) {}
          }
       }
       
       private function isMovementKey(keyCode:uint) : Boolean
       {
-         return keyCode == 37 || keyCode == 38 || keyCode == 39 || keyCode == 40 || keyCode == 65 || keyCode == 68 || keyCode == 83 || keyCode == 87 || keyCode == 69;
+         // ADICIONADO keyCode 49 (TECLA 1) para reset
+         return keyCode == 37 || keyCode == 38 || keyCode == 39 || 
+                keyCode == 40 || keyCode == 65 || keyCode == 68 || 
+                keyCode == 83 || keyCode == 87 || keyCode == 49;
       }
    }
 }
