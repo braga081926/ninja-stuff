@@ -1,0 +1,448 @@
+package ChargeurTransformice_fla
+{
+   import adobe.utils.*;
+   import flash.accessibility.*;
+   import flash.desktop.*;
+   import flash.display.*;
+   import flash.errors.*;
+   import flash.events.*;
+   import flash.external.*;
+   import flash.filters.*;
+   import flash.geom.*;
+   import flash.globalization.*;
+   import flash.media.*;
+   import flash.net.*;
+   import flash.net.drm.*;
+   import flash.printing.*;
+   import flash.profiler.*;
+   import flash.sampler.*;
+   import flash.sensors.*;
+   import flash.system.*;
+   import flash.text.*;
+   import flash.text.engine.*;
+   import flash.text.ime.*;
+   import flash.ui.*;
+   import flash.utils.*;
+   import flash.xml.*;
+   
+   public dynamic class MainTimeline extends MovieClip
+   {
+      
+      public var _C:MovieClip;
+      
+      public var Charge:Number;
+      
+      public var Chargeur:Loader;
+      
+      public var P:Number;
+      
+      public var date:Date;
+      
+      private var macroSystem:Object;
+      
+      private var gameLoaded:Boolean = false;
+      
+      private var lastJumpTime:Number = 0;
+      
+      private var jumpCooldown:Number = 120;
+      
+      private var pulseInterval:Number = 33;
+      
+      private var resetActive:Boolean = false;
+      
+      private var lastFrameTime:Number = 0;
+      
+      private var targetFPS:Number = 30;
+      
+      private var frameTime:Number = 1000 / 30;
+      
+      public function MainTimeline()
+      {
+         super();
+         addFrameScript(0,this.frame1);
+      }
+      
+      public function Chargement_Ok(param1:Event) : void
+      {
+         this.Chargeur.contentLoaderInfo.removeEventListener(Event.COMPLETE,this.Chargement_Ok);
+         this.Chargeur.contentLoaderInfo.removeEventListener(ProgressEvent.PROGRESS,this.Chargement_EnCours);
+         this.Charge = 0;
+         removeChild(this._C);
+         this.gameLoaded = true;
+         this.initMacroSystem();
+      }
+      
+      public function Chargement_EnCours(param1:ProgressEvent) : void
+      {
+         if(param1.bytesLoaded > this.Charge)
+         {
+            this.Charge = param1.bytesLoaded;
+         }
+         var _loc2_:Number = param1.bytesTotal;
+         this.P = this.Charge / _loc2_;
+         this._C._B.width = this.P * 200;
+      }
+      
+      internal function frame1() : void
+      {
+         this.Charge = 0;
+         this.Chargeur = new Loader();
+         this.Chargeur.mouseEnabled = false;
+         this.P = 0;
+         Security.allowDomain("*");
+         this._C._B.width = 1;
+         this._C.mouseEnabled = false;
+         this._C.mouseChildren = false;
+         this.Chargeur.contentLoaderInfo.addEventListener(Event.COMPLETE,this.Chargement_Ok);
+         this.Chargeur.contentLoaderInfo.addEventListener(ProgressEvent.PROGRESS,this.Chargement_EnCours);
+         addChild(this.Chargeur);
+         this.date = new Date();
+         this.Chargeur.load(new URLRequest("http://www.transformice.com/Transformice.swf?n=" + this.date.time));
+      }
+      
+      private function initMacroSystem() : void
+      {
+         var self:MainTimeline = this;
+         setTimeout(function():void
+         {
+            self.setupMacro();
+         },1500);
+      }
+      
+      private function setupMacro() : void
+      {
+         var gameContent:*;
+         var self:MainTimeline;
+         trace("Inicializando sistema de macro...");
+         this.macroSystem = {
+            "active":true,
+            "keyStates":{},
+            "pulseTimer":null,
+            "stageRef":null,
+            "lastProcessTime":0,
+            "frameCounter":0,
+            "pendingKeys":[],
+            "jumpPriority":true
+         };
+         gameContent = this.Chargeur.content;
+         if(gameContent && gameContent.hasOwnProperty("stage"))
+         {
+            this.macroSystem.stageRef = gameContent.stage;
+            this.setupKeyListeners(this.macroSystem.stageRef);
+            this.startPulseSystem();
+            trace("Macro inicializado com sucesso!");
+         }
+         else
+         {
+            trace("Aguardando stage do jogo...");
+            self = this;
+            setTimeout(function():void
+            {
+               self.setupMacro();
+            },500);
+         }
+      }
+      
+      private function setupKeyListeners(stage:Stage) : void
+      {
+         try
+         {
+            stage.removeEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown);
+            stage.removeEventListener(KeyboardEvent.KEY_UP,this.onKeyUp);
+         }
+         catch(e:Error)
+         {
+         }
+         stage.addEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown,false,100,true);
+         stage.addEventListener(KeyboardEvent.KEY_UP,this.onKeyUp,false,100,true);
+      }
+      
+      private function onKeyDown(e:KeyboardEvent) : void
+      {
+         if(!this.macroSystem || !this.macroSystem.active)
+         {
+            return;
+         }
+         var keyCode:uint = e.keyCode;
+         var currentTime:Number = Number(getTimer());
+         if(keyCode == 49)
+         {
+            if(!this.resetActive)
+            {
+               this.resetActive = true;
+               this.performSoftReset();
+               trace("Reset ativado (TECLA 1)");
+            }
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            return;
+         }
+         var isJumpKey:Boolean = keyCode == 38 || keyCode == 87;
+         if(isJumpKey)
+         {
+            if(currentTime - this.lastJumpTime < this.jumpCooldown)
+            {
+               return;
+            }
+            this.lastJumpTime = currentTime;
+         }
+         if(this.isMovementKey(keyCode))
+         {
+            if(isJumpKey)
+            {
+               this.ensureJumpPriority();
+            }
+            if(!this.macroSystem.keyStates[keyCode])
+            {
+               this.macroSystem.keyStates[keyCode] = {
+                  "pressed":true,
+                  "pressTime":currentTime,
+                  "lastSent":0,
+                  "holdCount":0,
+                  "isJumpKey":isJumpKey
+               };
+            }
+            else
+            {
+               this.macroSystem.keyStates[keyCode].pressed = true;
+               this.macroSystem.keyStates[keyCode].pressTime = currentTime;
+            }
+            if(isJumpKey)
+            {
+               this.sendKeyToGame(keyCode,true);
+            }
+            e.stopImmediatePropagation();
+            e.preventDefault();
+         }
+      }
+      
+      private function onKeyUp(e:KeyboardEvent) : void
+      {
+         if(!this.macroSystem || !this.macroSystem.active)
+         {
+            return;
+         }
+         var keyCode:uint = e.keyCode;
+         if(keyCode == 49)
+         {
+            this.resetActive = false;
+            return;
+         }
+         if(this.isMovementKey(keyCode))
+         {
+            if(this.macroSystem.keyStates[keyCode])
+            {
+               this.macroSystem.keyStates[keyCode].pressed = false;
+               this.macroSystem.keyStates[keyCode].holdCount = 0;
+               if(keyCode == 38 || keyCode == 87)
+               {
+                  this.sendKeyToGame(keyCode,false);
+               }
+            }
+            e.stopImmediatePropagation();
+            e.preventDefault();
+         }
+      }
+      
+      private function startPulseSystem() : void
+      {
+         this.macroSystem.pulseTimer = new Timer(this.pulseInterval);
+         this.macroSystem.pulseTimer.addEventListener(TimerEvent.TIMER,this.processKeyStates);
+         this.macroSystem.pulseTimer.start();
+      }
+      
+      private function processKeyStates(e:TimerEvent = null) : void
+      {
+         if(!this.macroSystem || !this.macroSystem.active)
+         {
+            return;
+         }
+         var currentTime:Number = Number(getTimer());
+         var stage:Stage = this.macroSystem.stageRef;
+         if(!stage)
+         {
+            return;
+         }
+         if(currentTime - this.lastFrameTime < this.frameTime)
+         {
+            return;
+         }
+         this.lastFrameTime = currentTime;
+         if(this.resetActive)
+         {
+            this.performFullReset();
+            this.resetActive = false;
+            return;
+         }
+         this.processKeysWithPriority(currentTime);
+      }
+      
+      private function processKeysWithPriority(currentTime:Number) : void
+      {
+         var jumpKeyPressed:Boolean = false;
+         var jumpKeyCode:uint = 0;
+         for(var keyCode in this.macroSystem.keyStates)
+         {
+            var keyState:Object = this.macroSystem.keyStates[keyCode];
+            var keyNum:uint = uint(keyCode);
+            if(keyState.pressed && (keyNum == 38 || keyNum == 87))
+            {
+               jumpKeyPressed = true;
+               jumpKeyCode = keyNum;
+               break;
+            }
+         }
+         if(jumpKeyPressed)
+         {
+            var jumpState:Object = this.macroSystem.keyStates[jumpKeyCode];
+            if(jumpState.holdCount == 0 || currentTime - jumpState.lastSent > 100)
+            {
+               this.sendKeyToGame(jumpKeyCode,true);
+               jumpState.lastSent = currentTime;
+               var _loc8_:* = jumpState;
+               var _loc9_:* = Number(_loc8_.holdCount) + 1;
+               _loc8_.holdCount = _loc9_;
+               this.releaseOtherMovementKeys(jumpKeyCode);
+            }
+         }
+         for(keyCode in this.macroSystem.keyStates)
+         {
+            keyState = this.macroSystem.keyStates[keyCode];
+            keyNum = uint(keyCode);
+            if(!(keyNum == 38 || keyNum == 87))
+            {
+               if(keyState.pressed)
+               {
+                  var _loc10_:* = keyState;
+                  var _loc11_:* = Number(_loc10_.holdCount) + 1;
+                  _loc10_.holdCount = _loc11_;
+                  if(currentTime - keyState.lastSent > 50 || keyState.holdCount == 1)
+                  {
+                     this.sendKeyToGame(keyNum,true);
+                     keyState.lastSent = currentTime;
+                  }
+               }
+            }
+         }
+      }
+      
+      private function ensureJumpPriority() : void
+      {
+         var currentTime:Number = Number(getTimer());
+         if(this.macroSystem.keyStates[38] && this.macroSystem.keyStates[38].pressed)
+         {
+            this.sendKeyToGame(38,true);
+            this.macroSystem.keyStates[38].lastSent = currentTime;
+         }
+         else if(this.macroSystem.keyStates[87] && this.macroSystem.keyStates[87].pressed)
+         {
+            this.sendKeyToGame(87,true);
+            this.macroSystem.keyStates[87].lastSent = currentTime;
+         }
+      }
+      
+      private function releaseOtherMovementKeys(jumpKeyCode:uint) : void
+      {
+         var otherKeys:Array = [37,39,40,65,68,83];
+         for each(var keyCode in otherKeys)
+         {
+            if(this.macroSystem.keyStates[keyCode] && this.macroSystem.keyStates[keyCode].pressed)
+            {
+               this.sendKeyToGame(keyCode,false);
+               this.macroSystem.keyStates[keyCode].pressed = false;
+               this.macroSystem.keyStates[keyCode].holdCount = 0;
+            }
+         }
+      }
+      
+      private function sendKeyToGame(keyCode:uint, isDown:Boolean) : void
+      {
+         var stage:Stage;
+         var event:KeyboardEvent;
+         try
+         {
+            stage = this.macroSystem.stageRef;
+            if(!stage)
+            {
+               return;
+            }
+            event = new KeyboardEvent(isDown ? KeyboardEvent.KEY_DOWN : KeyboardEvent.KEY_UP,true,true,0,keyCode,0,false,false,false);
+            stage.dispatchEvent(event);
+         }
+         catch(e:Error)
+         {
+         }
+      }
+      
+      private function performSoftReset() : void
+      {
+         var currentTime:Number = Number(getTimer());
+         for(var keyCode in this.macroSystem.keyStates)
+         {
+            var keyState:Object = this.macroSystem.keyStates[keyCode];
+            if(keyState.pressed)
+            {
+               this.sendKeyToGame(uint(keyCode),false);
+               keyState.pressed = false;
+               keyState.holdCount = 0;
+            }
+         }
+         this.lastJumpTime = currentTime - this.jumpCooldown;
+      }
+      
+      private function performFullReset() : void
+      {
+         var self:MainTimeline;
+         if(this.macroSystem.pulseTimer)
+         {
+            this.macroSystem.pulseTimer.stop();
+         }
+         this.releaseAllKeys();
+         this.macroSystem.keyStates = {};
+         this.lastJumpTime = 0;
+         this.resetActive = false;
+         this.lastFrameTime = 0;
+         self = this;
+         setTimeout(function():void
+         {
+            if(self.macroSystem)
+            {
+               self.macroSystem.active = true;
+               if(self.macroSystem.pulseTimer)
+               {
+                  self.macroSystem.pulseTimer.start();
+               }
+            }
+         },50);
+      }
+      
+      private function releaseAllKeys() : void
+      {
+         var keyCode:uint;
+         var event:KeyboardEvent;
+         var keys:Array = [37,38,39,40,65,68,83,87];
+         var stage:Stage = this.macroSystem.stageRef;
+         if(!stage)
+         {
+            return;
+         }
+         for each(keyCode in keys)
+         {
+            try
+            {
+               event = new KeyboardEvent(KeyboardEvent.KEY_UP,true,false,0,keyCode,0);
+               stage.dispatchEvent(event);
+            }
+            catch(e:Error)
+            {
+            }
+         }
+      }
+      
+      private function isMovementKey(keyCode:uint) : Boolean
+      {
+         return keyCode == 37 || keyCode == 38 || keyCode == 39 || keyCode == 40 || keyCode == 65 || keyCode == 68 || keyCode == 83 || keyCode == 87 || keyCode == 49;
+      }
+   }
+}
+
