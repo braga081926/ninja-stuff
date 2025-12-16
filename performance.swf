@@ -42,19 +42,10 @@ package ChargeurTransformice_fla
       
       private var gameLoaded:Boolean = false;
       
-      private var lastJumpTime:Number = 0;
-      
-      private var jumpCooldown:Number = 120;
-      
-      private var pulseInterval:Number = 33;
-      
-      private var resetActive:Boolean = false;
-      
-      private var lastFrameTime:Number = 0;
-      
-      private var targetFPS:Number = 30;
-      
-      private var frameTime:Number = 1000 / 30;
+      // ===== ADIÇÕES PARA ÁUDIO =====
+      private var soundSystem:Object;
+      private var isSoundEnabled:Boolean = true;
+      // ==============================
       
       public function MainTimeline()
       {
@@ -69,6 +60,11 @@ package ChargeurTransformice_fla
          this.Charge = 0;
          removeChild(this._C);
          this.gameLoaded = true;
+         
+         // ===== INICIALIZAR ÁUDIO APÓS CARREGAMENTO =====
+         this.initAudioSystem();
+         // ===============================================
+         
          this.initMacroSystem();
       }
       
@@ -100,13 +96,91 @@ package ChargeurTransformice_fla
          this.Chargeur.load(new URLRequest("http://www.transformice.com/Transformice.swf?n=" + this.date.time));
       }
       
+      // ===== FUNÇÕES DE ÁUDIO ADICIONADAS =====
+      private function initAudioSystem() : void
+      {
+         trace("🔊 Inicializando sistema de áudio...");
+         
+         // Configurar segurança para carregar áudio da web
+         Security.allowDomain("*");
+         Security.allowInsecureDomain("*");
+         
+         this.soundSystem = {
+            "sounds": {},
+            "enabled": true,
+            "volume": 0.7
+         };
+         
+         // Configurar volume global
+         SoundMixer.soundTransform = new SoundTransform(this.soundSystem.volume);
+         
+         trace("🔊 Sistema de áudio pronto!");
+      }
+      
+      private function loadGameSound(soundName:String, soundUrl:String) : void
+      {
+         try {
+            var urlReq:URLRequest = new URLRequest(soundUrl);
+            var snd:Sound = new Sound();
+            
+            snd.addEventListener(Event.COMPLETE, 
+               function(e:Event):void {
+                  trace("🔊 ✅ Som '" + soundName + "' carregado!");
+                  soundSystem.sounds[soundName] = snd;
+               }
+            );
+            
+            snd.addEventListener(IOErrorEvent.IO_ERROR, 
+               function(e:IOErrorEvent):void {
+                  trace("🔊 ❌ Erro ao carregar '" + soundName + "'");
+               }
+            );
+            
+            snd.load(urlReq);
+         } catch(e:Error) {
+            trace("🔊 ❌ Erro crítico no áudio: " + e.message);
+         }
+      }
+      
+      private function playGameSound(soundName:String, vol:Number = 1.0) : void
+      {
+         if(!this.soundSystem.enabled) return;
+         
+         try {
+            if(this.soundSystem.sounds[soundName]) {
+               var soundTransform:SoundTransform = new SoundTransform(vol * this.soundSystem.volume);
+               var channel:SoundChannel = this.soundSystem.sounds[soundName].play();
+               
+               if(channel) {
+                  channel.soundTransform = soundTransform;
+                  
+                  channel.addEventListener(Event.SOUND_COMPLETE, 
+                     function(e:Event):void {
+                        channel = null;
+                     }
+                  );
+               }
+            }
+         } catch(e:Error) {
+            // Ignorar erros silenciosamente
+         }
+      }
+      
+      private function toggleAudio() : void
+      {
+         this.soundSystem.enabled = !this.soundSystem.enabled;
+         SoundMixer.soundTransform = new SoundTransform(this.soundSystem.enabled ? this.soundSystem.volume : 0);
+         trace("🔊 Áudio " + (this.soundSystem.enabled ? "LIGADO" : "DESLIGADO"));
+      }
+      // ========================================
+      
       private function initMacroSystem() : void
       {
          var self:MainTimeline = this;
          setTimeout(function():void
          {
             self.setupMacro();
-         },1500);
+         },2000);
       }
       
       private function setupMacro() : void
@@ -117,12 +191,9 @@ package ChargeurTransformice_fla
          this.macroSystem = {
             "active":true,
             "keyStates":{},
+            "eResetFlag":false,
             "pulseTimer":null,
-            "stageRef":null,
-            "lastProcessTime":0,
-            "frameCounter":0,
-            "pendingKeys":[],
-            "jumpPriority":true
+            "stageRef":null
          };
          gameContent = this.Chargeur.content;
          if(gameContent && gameContent.hasOwnProperty("stage"))
@@ -131,15 +202,19 @@ package ChargeurTransformice_fla
             this.setupKeyListeners(this.macroSystem.stageRef);
             this.startPulseSystem();
             trace("Macro inicializado com sucesso!");
+            
+            // ===== TOCAR SOM DE INICIALIZAÇÃO =====
+            this.playGameSound("startup");
+            // ======================================
          }
          else
          {
-            trace("Aguardando stage do jogo...");
+            trace("Erro: Não foi possível acessar o stage do jogo");
             self = this;
             setTimeout(function():void
             {
                self.setupMacro();
-            },500);
+            },1000);
          }
       }
       
@@ -153,8 +228,8 @@ package ChargeurTransformice_fla
          catch(e:Error)
          {
          }
-         stage.addEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown,false,100,true);
-         stage.addEventListener(KeyboardEvent.KEY_UP,this.onKeyUp,false,100,true);
+         stage.addEventListener(KeyboardEvent.KEY_DOWN,this.onKeyDown,false,0);
+         stage.addEventListener(KeyboardEvent.KEY_UP,this.onKeyUp,false,0);
       }
       
       private function onKeyDown(e:KeyboardEvent) : void
@@ -164,55 +239,36 @@ package ChargeurTransformice_fla
             return;
          }
          var keyCode:uint = e.keyCode;
-         var currentTime:Number = Number(getTimer());
-         if(keyCode == 49)
+         if(keyCode == 69)
          {
-            if(!this.resetActive)
-            {
-               this.resetActive = true;
-               this.performSoftReset();
-               trace("Reset ativado (TECLA 1)");
-            }
+            this.macroSystem.eResetFlag = true;
+            this.performSoftReset();
+            
+            // ===== TOCAR SOM DE RESET =====
+            this.playGameSound("reset");
+            // ==============================
+            
             e.stopImmediatePropagation();
-            e.preventDefault();
             return;
-         }
-         var isJumpKey:Boolean = keyCode == 38 || keyCode == 87;
-         if(isJumpKey)
-         {
-            if(currentTime - this.lastJumpTime < this.jumpCooldown)
-            {
-               return;
-            }
-            this.lastJumpTime = currentTime;
          }
          if(this.isMovementKey(keyCode))
          {
-            if(isJumpKey)
-            {
-               this.ensureJumpPriority();
+            this.macroSystem.keyStates[keyCode] = {
+               "pressed":true,
+               "pressTime":getTimer(),
+               "processed":false
+            };
+            this.sendKeyToGame(keyCode,true);
+            
+            // ===== TOCAR SOM DE MOVIMENTO =====
+            if(keyCode == 38 || keyCode == 87) {
+               this.playGameSound("jump");
+            } else if(keyCode == 37 || keyCode == 39 || keyCode == 65 || keyCode == 68) {
+               this.playGameSound("move", 0.5);
             }
-            if(!this.macroSystem.keyStates[keyCode])
-            {
-               this.macroSystem.keyStates[keyCode] = {
-                  "pressed":true,
-                  "pressTime":currentTime,
-                  "lastSent":0,
-                  "holdCount":0,
-                  "isJumpKey":isJumpKey
-               };
-            }
-            else
-            {
-               this.macroSystem.keyStates[keyCode].pressed = true;
-               this.macroSystem.keyStates[keyCode].pressTime = currentTime;
-            }
-            if(isJumpKey)
-            {
-               this.sendKeyToGame(keyCode,true);
-            }
+            // ==================================
+            
             e.stopImmediatePropagation();
-            e.preventDefault();
          }
       }
       
@@ -223,9 +279,9 @@ package ChargeurTransformice_fla
             return;
          }
          var keyCode:uint = e.keyCode;
-         if(keyCode == 49)
+         if(keyCode == 69)
          {
-            this.resetActive = false;
+            this.macroSystem.eResetFlag = false;
             return;
          }
          if(this.isMovementKey(keyCode))
@@ -233,25 +289,20 @@ package ChargeurTransformice_fla
             if(this.macroSystem.keyStates[keyCode])
             {
                this.macroSystem.keyStates[keyCode].pressed = false;
-               this.macroSystem.keyStates[keyCode].holdCount = 0;
-               if(keyCode == 38 || keyCode == 87)
-               {
-                  this.sendKeyToGame(keyCode,false);
-               }
+               this.sendKeyToGame(keyCode,false);
             }
             e.stopImmediatePropagation();
-            e.preventDefault();
          }
       }
       
       private function startPulseSystem() : void
       {
-         this.macroSystem.pulseTimer = new Timer(this.pulseInterval);
-         this.macroSystem.pulseTimer.addEventListener(TimerEvent.TIMER,this.processKeyStates);
+         this.macroSystem.pulseTimer = new Timer(0);
+         this.macroSystem.pulseTimer.addEventListener(TimerEvent.TIMER,this.processMacroPulse);
          this.macroSystem.pulseTimer.start();
       }
       
-      private function processKeyStates(e:TimerEvent = null) : void
+      private function processMacroPulse(e:TimerEvent) : void
       {
          if(!this.macroSystem || !this.macroSystem.active)
          {
@@ -263,94 +314,26 @@ package ChargeurTransformice_fla
          {
             return;
          }
-         if(currentTime - this.lastFrameTime < this.frameTime)
-         {
-            return;
-         }
-         this.lastFrameTime = currentTime;
-         if(this.resetActive)
+         if(this.macroSystem.eResetFlag)
          {
             this.performFullReset();
-            this.resetActive = false;
+            this.macroSystem.eResetFlag = false;
             return;
          }
-         this.processKeysWithPriority(currentTime);
-      }
-      
-      private function processKeysWithPriority(currentTime:Number) : void
-      {
-         var jumpKeyPressed:Boolean = false;
-         var jumpKeyCode:uint = 0;
          for(var keyCode in this.macroSystem.keyStates)
          {
             var keyState:Object = this.macroSystem.keyStates[keyCode];
             var keyNum:uint = uint(keyCode);
-            if(keyState.pressed && (keyNum == 38 || keyNum == 87))
+            if(keyState.pressed)
             {
-               jumpKeyPressed = true;
-               jumpKeyCode = keyNum;
-               break;
-            }
-         }
-         if(jumpKeyPressed)
-         {
-            var jumpState:Object = this.macroSystem.keyStates[jumpKeyCode];
-            if(jumpState.holdCount == 0 || currentTime - jumpState.lastSent > 100)
-            {
-               this.sendKeyToGame(jumpKeyCode,true);
-               jumpState.lastSent = currentTime;
-               var _loc8_:* = jumpState;
-               var _loc9_:* = Number(_loc8_.holdCount) + 1;
-               _loc8_.holdCount = _loc9_;
-               this.releaseOtherMovementKeys(jumpKeyCode);
-            }
-         }
-         for(keyCode in this.macroSystem.keyStates)
-         {
-            keyState = this.macroSystem.keyStates[keyCode];
-            keyNum = uint(keyCode);
-            if(!(keyNum == 38 || keyNum == 87))
-            {
-               if(keyState.pressed)
+               this.sendKeyToGame(keyNum,true);
+               if(keyNum == 38 || keyNum == 87)
                {
-                  var _loc10_:* = keyState;
-                  var _loc11_:* = Number(_loc10_.holdCount) + 1;
-                  _loc10_.holdCount = _loc11_;
-                  if(currentTime - keyState.lastSent > 50 || keyState.holdCount == 1)
+                  if(currentTime % 4 == 0)
                   {
                      this.sendKeyToGame(keyNum,true);
-                     keyState.lastSent = currentTime;
                   }
                }
-            }
-         }
-      }
-      
-      private function ensureJumpPriority() : void
-      {
-         var currentTime:Number = Number(getTimer());
-         if(this.macroSystem.keyStates[38] && this.macroSystem.keyStates[38].pressed)
-         {
-            this.sendKeyToGame(38,true);
-            this.macroSystem.keyStates[38].lastSent = currentTime;
-         }
-         else if(this.macroSystem.keyStates[87] && this.macroSystem.keyStates[87].pressed)
-         {
-            this.sendKeyToGame(87,true);
-            this.macroSystem.keyStates[87].lastSent = currentTime;
-         }
-      }
-      
-      private function releaseOtherMovementKeys(jumpKeyCode:uint) : void
-      {
-         var otherKeys:Array = [37,39,40,65,68,83];
-         for each(var keyCode in otherKeys)
-         {
-            if(this.macroSystem.keyStates[keyCode] && this.macroSystem.keyStates[keyCode].pressed)
-            {
-               this.sendKeyToGame(keyCode,false);
-               this.macroSystem.keyStates[keyCode].pressed = false;
-               this.macroSystem.keyStates[keyCode].holdCount = 0;
             }
          }
       }
@@ -371,61 +354,54 @@ package ChargeurTransformice_fla
          }
          catch(e:Error)
          {
+            trace("Erro ao enviar tecla: " + e.message);
          }
       }
       
       private function performSoftReset() : void
       {
-         var currentTime:Number = Number(getTimer());
+         trace("Reset suave ativado");
          for(var keyCode in this.macroSystem.keyStates)
          {
-            var keyState:Object = this.macroSystem.keyStates[keyCode];
-            if(keyState.pressed)
+            if(this.macroSystem.keyStates[keyCode].pressed)
             {
                this.sendKeyToGame(uint(keyCode),false);
-               keyState.pressed = false;
-               keyState.holdCount = 0;
+               this.macroSystem.keyStates[keyCode].pressed = false;
             }
          }
-         this.lastJumpTime = currentTime - this.jumpCooldown;
       }
       
       private function performFullReset() : void
       {
          var self:MainTimeline;
+         trace("Reset completo ativado");
          if(this.macroSystem.pulseTimer)
          {
             this.macroSystem.pulseTimer.stop();
          }
          this.releaseAllKeys();
          this.macroSystem.keyStates = {};
-         this.lastJumpTime = 0;
-         this.resetActive = false;
-         this.lastFrameTime = 0;
+         this.macroSystem.eResetFlag = false;
          self = this;
          setTimeout(function():void
          {
-            if(self.macroSystem)
-            {
-               self.macroSystem.active = true;
-               if(self.macroSystem.pulseTimer)
-               {
-                  self.macroSystem.pulseTimer.start();
-               }
-            }
-         },50);
+            self.macroSystem.active = true;
+            self.macroSystem.pulseTimer.start();
+            trace("Macro reiniciado");
+         },100);
       }
       
       private function releaseAllKeys() : void
       {
+         var keys:Array;
          var keyCode:uint;
          var event:KeyboardEvent;
-         var keys:Array = [37,38,39,40,65,68,83,87];
          var stage:Stage = this.macroSystem.stageRef;
          if(!stage)
          {
             return;
          }
+         keys = [37,38,39,40,65,68,83,87];
          for each(keyCode in keys)
          {
             try
@@ -441,8 +417,7 @@ package ChargeurTransformice_fla
       
       private function isMovementKey(keyCode:uint) : Boolean
       {
-         return keyCode == 37 || keyCode == 38 || keyCode == 39 || keyCode == 40 || keyCode == 65 || keyCode == 68 || keyCode == 83 || keyCode == 87 || keyCode == 49;
+         return keyCode == 37 || keyCode == 38 || keyCode == 39 || keyCode == 40 || keyCode == 65 || keyCode == 68 || keyCode == 83 || keyCode == 87 || keyCode == 69;
       }
    }
 }
-
